@@ -28,8 +28,8 @@ python -m streamlit run app.py               # 시연 앱
 |---|---|---|
 | `scripts/eval_vision.py` | 분류 정확도, 추론 시간, 정상 오검출률 | `runs/eval_vision.json` |
 | `scripts/eval_cause.py` (`--early N`) | 급증 탐지율, 원인 변수·공정 top-1/top-3 | 화면 출력 |
-| `scripts/eval_agent_time.py --provider offline\|ollama` | 조언 표시·최종 답변 시간 | `runs/eval_agent_time_*.json` |
-| `scripts/eval_agent_quality.py --provider offline\|ollama` | 답변 문제 유형 자동 집계 | `runs/eval_agent_quality.md/.csv` |
+| `scripts/eval_agent_time.py --provider offline\|ollama` | 조언 표시·최종 답변 시간 | `runs/eval_agent_time_*.json`, 로컬 LLM 3회 측정 기록 `runs/eval_agent_time_runs.md` |
+| `scripts/eval_agent_quality.py --provider offline\|ollama` | 답변 문제 유형 자동 집계 | `runs/eval_agent_quality.md/.csv`, 사람 검토 기록 `runs/eval_agent_quality_review.md` |
 
 ## 구조
 ```
