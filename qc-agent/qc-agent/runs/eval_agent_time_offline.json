@@ -1,0 +1,21 @@
+{
+  "provider": "offline",
+  "device": "Windows-10-10.0.19045-SP0",
+  "modes": [
+    "offline"
+  ],
+  "first_advice": {
+    "mean": 0.56,
+    "median": 0.62,
+    "max": 0.73,
+    "within_5s": 30,
+    "n": 30
+  },
+  "total": {
+    "mean": 0.56,
+    "median": 0.62,
+    "max": 0.73,
+    "within_5s": 30,
+    "n": 30
+  }
+}

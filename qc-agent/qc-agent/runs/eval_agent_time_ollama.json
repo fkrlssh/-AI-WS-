@@ -1,0 +1,21 @@
+{
+  "provider": "ollama",
+  "device": "Windows-10-10.0.19045-SP0",
+  "modes": [
+    "ollama Agent · 근거 검증 통과"
+  ],
+  "first_advice": {
+    "mean": 0.0,
+    "median": 0.0,
+    "max": 0.05,
+    "within_5s": 12,
+    "n": 12
+  },
+  "total": {
+    "mean": 17.38,
+    "median": 17.13,
+    "max": 22.7,
+    "within_5s": 0,
+    "n": 12
+  }
+}

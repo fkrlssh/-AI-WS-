@@ -1,0 +1,19 @@
+{
+  "weights": "runs/neu_bg_tolo11n/weights/best.pt",
+  "conf": 0.25,
+  "val_images": 180,
+  "image_accuracy": 0.95,
+  "per_class": {
+    "crazing": 0.9,
+    "inclusion": 0.933,
+    "patches": 1.0,
+    "pitted_surface": 0.9,
+    "rolled-in_scale": 0.967,
+    "scratches": 1.0
+  },
+  "latency_ms_mean": 9.2,
+  "latency_ms_p95": 11.1,
+  "device": "Windows-10-10.0.19045-SP0",
+  "normals": 36,
+  "false_positive_rate": 0.1667
+}

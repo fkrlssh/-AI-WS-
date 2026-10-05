@@ -12,3 +12,5 @@ python-dotenv
 ultralytics
 # UI
 streamlit>=1.46
+# 로컬 LLM(선택): Ollama 사용 시
+langchain-ollama

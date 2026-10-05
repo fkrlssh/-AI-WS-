@@ -57,6 +57,11 @@ def con():
     return c
 
 
+def _md(t: str) -> str:
+    """마크다운에서 '190~230 … 595~635'의 물결표가 취소선으로 바뀌지 않게 이스케이프"""
+    return t.replace("~", "\\~")
+
+
 # ---------------------------------------------------------------- 데이터
 @st.cache_data
 def load_products():
@@ -177,8 +182,14 @@ with st.sidebar:
     det = get_detector(weights, conf_th)
     st.caption(f"검출 모드: **{det.mode}**" + (f" — {det.error}" if det.error else ""))
     speed = st.slider("벨트 속도", 4, 40, 14)
-    has_key = bool(os.getenv("ANTHROPIC_API_KEY"))
-    offline = st.toggle("오프라인 Agent(규칙 기반)", value=not has_key, disabled=not has_key)
+    AGENTS = {"오프라인 (규칙 기반)": None, "로컬 LLM (Ollama)": "ollama"}
+    if os.getenv("ANTHROPIC_API_KEY"):
+        AGENTS["Claude API"] = "claude"
+    default = {None: 0, "ollama": 1, "claude": 2}.get(C.llm_provider(), 0)
+    agent_name = st.radio("Agent 모드", list(AGENTS), index=min(default, len(AGENTS) - 1),
+                          help="로컬 LLM: 도구 선택·설명은 LLM, 수치는 검증된 엔진 (근거에 없는 숫자는 자동 차단)")
+    provider = AGENTS[agent_name]
+    offline = provider is None
     c1, c2 = st.columns(2)
     if c1.button("처음부터", width="stretch"):
         init_state(labels[choice] - 30); st.rerun()
@@ -274,12 +285,12 @@ with right:
         a.image(str(ROOT / r.saved_path), width="stretch")
         tr = C.get_product_trace(pid)
         b.markdown(f"**결함** {KO[r.defect]} (신뢰도 {r.conf:.2f})  \n**검사 시각** {r.ts[11:19]} · **LOT** {r.lot}  \n"
-                   f"**판정 시간** {r.latency_ms:.1f} ms  \n**정상범위 이탈** " + (", ".join(tr["out_of_range"]) or "없음"))
+                   f"**판정 시간** {r.latency_ms:.1f} ms  \n**정상범위 이탈** " + _md(", ".join(tr["out_of_range"]) or "없음"))
         tdf = pd.DataFrame([{"공정": t["station"], "변수": t["desc"], "통과 시 값": f"{t['value']:g} {t['unit']}",
                              "정상범위": f"{t['normal'][0]:g}~{t['normal'][1]:g}", "이탈": "⚠" if t["out_of_range"] else ""}
                             for t in tr["trace"]])
         with st.expander("이 제품의 공정 이력 (제품ID 기준 역추적)", expanded=False):
-            st.dataframe(tdf.style.apply(lambda s: ["background-color:#fde2e2" if s["이탈"] else "" for _ in s], axis=1),
+            st.dataframe(tdf.style.apply(lambda s: ["background-color:#c62828;color:#ffffff;font-weight:700" if s["이탈"] else "" for _ in s], axis=1),
                          hide_index=True, width="stretch")
 
         hist = st.session_state.chats.setdefault(pid, [])
@@ -287,11 +298,17 @@ with right:
         with box:
             for m in hist:
                 with st.chat_message(m["role"]):
-                    st.markdown(m["text"])
+                    st.markdown(_md(m["text"]))
                     if m.get("steps"):
-                        with st.expander(f"Agent 조사 과정 ({len(m['steps'])}단계 · {m.get('mode')})"):
+                        tm = m.get("timing") or {}
+                        tlabel = f" · 조언 {tm['first_advice']}초 / 전체 {tm['total']}초" if tm else ""
+                        with st.expander(f"Agent 조사 과정 ({len(m['steps'])}단계 · {m.get('mode')}{tlabel})"):
                             for s_ in m["steps"]:
-                                st.markdown(f"🔧 `{s_['name']}` → {s_['brief']}")
+                                who = {"LLM": "🤖 LLM 선택", "엔진": "⚙️ 검증 엔진"}.get(s_.get("by"), "🔧")
+                                st.markdown(_md(f"{who} `{s_['name']}` → {s_['brief']}"))
+                            if m.get("facts"):
+                                st.caption("규칙·통계 엔진의 검증된 원문")
+                                st.markdown(_md(m["facts"]))
         sug = ["이 결함은 어느 공정에서 발생했어?", "어떻게 조치해야 해?", "과거에 비슷한 조치가 있었어?", "조치안을 승인 대기로 등록해줘"]
         sc = st.columns(len(sug))
         q = None
@@ -300,8 +317,18 @@ with right:
                 q = s_
         q = st.chat_input("이 제품에 대해 질문하세요 (예: 같은 LOT에서 또 나왔어?)") or q
         if q:
-            with st.spinner("Agent가 공정 이력을 조사하는 중..."):
-                ans = C.chat(pid, [{"role": m["role"], "text": m["text"]} for m in hist], q, offline=offline)
+            with box:
+                with st.chat_message("user"):
+                    st.markdown(q)
+                with st.chat_message("assistant"):
+                    ph = st.empty()
+                    ph.info("Agent가 공정 이력을 조사하는 중...")
+                    # 검증 엔진의 조언을 먼저(1초 안팎) 보여주고, LLM 설명이 끝나면 교체
+                    show = (lambda f: ph.markdown(_md(f) + "\n\n_검증된 조언입니다. LLM이 설명을 작성하는 중..._")) \
+                        if provider else None
+                    ans = C.chat(pid, [{"role": m["role"], "text": m["text"]} for m in hist], q, offline=offline,
+                                 provider=provider, on_facts=show)
             hist += [{"role": "user", "text": q},
-                     {"role": "assistant", "text": ans["text"], "steps": ans["steps"], "mode": ans["mode"]}]
+                     {"role": "assistant", "text": ans["text"], "steps": ans["steps"], "mode": ans["mode"],
+                      "facts": ans.get("facts"), "timing": ans.get("timing")}]
             st.rerun()

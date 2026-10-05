@@ -94,7 +94,8 @@ def search_sop(query: str, k: int = 3) -> dict:
 
 
 def check_adjustment(var: str, proposed_value: float) -> dict:
-    """조정 제안값이 설비 허용 한계·1회 최대 조정폭·정상범위를 지키는지 검증하고, 위반 시 안전한 값을 제시."""
+    """조정 제안값이 설비 허용 한계·1회 최대 조정폭·정상범위를 지키는지 검증하고, 위반 시 안전한 값을 제시.
+    var는 영문 변수 키(예: heating_time, finish_speed, cooling_flow, coiling_temp, guide_gap, descale_pressure, furnace_temp)."""
     if var not in VARS:
         return {"ok": False, "issues": [f"알 수 없는 변수: {var}"]}
     s = VARS[var]
@@ -105,7 +106,7 @@ def check_adjustment(var: str, proposed_value: float) -> dict:
     issues, safe = [], float(proposed_value)
     if not lo_h <= safe <= hi_h:
         issues.append(f"허용 한계 {lo_h}~{hi_h}{s['unit']} 벗어남"); safe = min(max(safe, lo_h), hi_h)
-    if step and abs(safe - cur) > step:
+    if step and abs(safe - cur) > step + 1e-3:   # 표시값 반올림(소수 3자리) 오차 허용
         issues.append(f"1회 최대 조정폭 {step}{s['unit']} 초과 (현재 {cur:.2f})")
         safe = cur + np.sign(safe - cur) * step
     if not lo_n <= safe <= hi_n:
@@ -116,7 +117,8 @@ def check_adjustment(var: str, proposed_value: float) -> dict:
 
 
 def get_action_history(defect_type: str | None = None, var: str | None = None, limit: int = 5) -> dict:
-    """과거 조치(승인·거절·효과) 이력 조회 — Agent의 장기 기억(Memory)."""
+    """과거 조치(승인·거절·효과) 이력 조회 — Agent의 장기 기억(Memory).
+    defect_type은 영문 키(crazing, inclusion, patches, pitted_surface, rolled-in_scale, scratches), var도 영문 키."""
     q, p = "SELECT * FROM actions WHERE 1=1", []
     if defect_type: q += " AND defect_type=?"; p.append(defect_type)
     if var: q += " AND var=?"; p.append(var)

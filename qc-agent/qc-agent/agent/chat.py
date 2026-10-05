@@ -3,7 +3,7 @@
 - LLM 모드: Claude(LangChain) tool calling. 대화 이력 유지.
 - 오프라인 모드: 같은 도구를 규칙대로 호출해 답한다(API 키가 없거나 호출 실패 시).
 """
-import json, os, sqlite3
+import re, json, os, sqlite3
 from . import tools as T
 from .agent import _brief
 from .data import CONTEXT, KO, SPEC, STATIONS, VARS, db
@@ -81,27 +81,60 @@ def _set_time(pid):
 
 
 # ---------------------------------------------------------------- LLM 모드
-def _chat_llm(pid, history, question, steps):
+_FORCE = None   # 화면에서 고른 LLM ('ollama'|'claude') — chat(provider=...)로 지정
+
+
+def llm_provider():
+    """LLM_PROVIDER=ollama 이면 로컬 LLM(Ollama), 아니면 ANTHROPIC_API_KEY가 있을 때 Claude. 둘 다 아니면 None"""
+    if _FORCE:
+        return _FORCE
+    if os.getenv("LLM_PROVIDER", "").lower() == "ollama":
+        return "ollama"
+    return "claude" if os.getenv("ANTHROPIC_API_KEY") else None
+
+
+def _make_llm():
+    if llm_provider() == "ollama":   # 공장 내부 PC에서 동작 — 공정 데이터가 외부로 나가지 않음
+        from langchain_ollama import ChatOllama
+        # reasoning=False: Qwen3 등 추론형 모델의 긴 '생각' 단계를 끔(응답 시간 대폭 단축)
+        # num_ctx 8192·num_predict 700: 프롬프트·출력 길이를 줄여 RTX 3060급에서도 수 초~십수 초
+        return ChatOllama(model=os.getenv("OLLAMA_MODEL", "qwen3:8b"), temperature=0, num_ctx=8192, num_predict=700,
+                          reasoning=False, keep_alive="30m",
+                          base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
     from langchain_anthropic import ChatAnthropic
+    return ChatAnthropic(model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"), temperature=0, max_tokens=1500)
+
+
+def _text(ai):
+    t = ai.text if isinstance(getattr(ai, "text", None), str) else str(ai.content)
+    return re.sub(r"<think>.*?</think>", "", t, flags=re.S).strip()   # 추론형 로컬 모델의 생각 과정 제거
+
+
+def _chat_llm(pid, history, question, steps, tools=None, max_steps=None, obs=None):
+    """LLM이 도구를 골라 호출하며 조사하는 Agent 루프. obs 리스트를 주면 (도구명, 원본 결과)를 모은다"""
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
     from langchain_core.tools import StructuredTool
 
     tr = get_product_trace(pid)
-    llm = ChatAnthropic(model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"), temperature=0, max_tokens=1500) \
-        .bind_tools([StructuredTool.from_function(f) for f in CHAT_TOOLS])
+    llm = _make_llm().bind_tools([StructuredTool.from_function(f) for f in (tools or CHAT_TOOLS)])
     msgs = [SystemMessage(SYSTEM.format(pid=pid, defect=tr.get("defect"), defect_ko=tr.get("defect_ko"),
                                         conf=tr.get("conf"), ts=tr.get("inspected_at"), lot=tr.get("lot")))]
+    if llm_provider() == "ollama" and "qwen3" in os.getenv("OLLAMA_MODEL", "qwen3:8b"):
+        msgs[0].content += "\n/no_think"   # Qwen3의 긴 추론 단계를 꺼서 응답 시간 단축
     for h in history:
         msgs.append(HumanMessage(h["text"]) if h["role"] == "user" else AIMessage(h["text"]))
     msgs.append(HumanMessage(question))
-    for _ in range(MAX_STEPS):
+    for _ in range(max_steps or MAX_STEPS):
         ai = llm.invoke(msgs)
         msgs.append(ai)
         if not ai.tool_calls:
-            return ai.text if isinstance(getattr(ai, "text", None), str) else str(ai.content)
+            return _text(ai)
         for tc in ai.tool_calls:
             r = _call(tc["name"], tc["args"], steps)
-            msgs.append(ToolMessage(json.dumps(r, ensure_ascii=False, default=str), tool_call_id=tc["id"]))
+            if obs is not None:
+                obs.append((tc["name"], steps[-1]["brief"]))
+            body = steps[-1]["brief"] if llm_provider() == "ollama" else json.dumps(r, ensure_ascii=False, default=str)
+            msgs.append(ToolMessage(body, tool_call_id=tc["id"]))   # 로컬 LLM엔 요약만 → 프롬프트가 짧아져 빠름
     return "조사 단계가 너무 길어져 중단했습니다. 질문을 나눠서 다시 물어봐 주세요."
 
 
@@ -151,6 +184,13 @@ def _chat_offline(pid, question, steps):
                 lines.append(f"2순위 후보: {c2['station']} · {c2['desc']} (SHAP {c2['shap_share']:.0%})")
         else:
             lines.append(f"**[원인 추정]** 분석 불가: {rc.get('error')}")
+        # 이 결함과 관련 없는 이탈 변수: 다른 결함의 원인 변수면 '전조'로 알림 (원인으로 섞어 말하지 않도록 명시)
+        mine_causes = {c["var"] for c in SPEC["defect_causes"].get(d, [])} | ({top["var"]} if top else set())
+        for t in tr["trace"]:
+            if t["out_of_range"] and t["var"] not in mine_causes:
+                other = [KO.get(k, k) for k, cs in SPEC["defect_causes"].items() if any(c["var"] == t["var"] for c in cs)]
+                lines.append(f"**[참고]** {t['desc']} 이탈({t['value']}{t['unit']})은 {KO[d]}의 원인 변수가 아닙니다"
+                             + (f". {'·'.join(other)}의 원인 변수이므로 해당 결함이 이어질 수 있는 전조로 지켜봐야 합니다." if other else "."))
         if calm and not tr["out_of_range"]:
             low = tr["conf"] is not None and tr["conf"] < 0.5
             lines.append("**[판단]** 이 제품의 공정변수와 원인 후보 값이 모두 정상범위 안이라 공정에서 생긴 불량으로 보기 어렵습니다. "
@@ -167,35 +207,201 @@ def _chat_offline(pid, question, steps):
             sop = _call("search_sop", {"query": f"{KO[d]} {top['desc']} 대응"}, steps)
             chk = _call("check_adjustment", {"var": top["var"], "proposed_value": VARS[top["var"]]["mean"]}, steps)
             val = chk["safe_value"]
-            if not chk["ok"]:
-                chk = _call("check_adjustment", {"var": top["var"], "proposed_value": val}, steps)
-            note = "1회 조정폭 제한으로 1차 조정값" if val != VARS[top["var"]]["mean"] else "목표값"
-            lines.append(f"**[조치 제안]** {top['desc']} **{chk['current']} → {val}{chk['unit']}** ({note}, 허용범위 검증 통과)")
-            sec = sop["results"][0]
-            bullet = next((l.strip("- ").strip() for l in sec["text"].splitlines() if top["desc"][:4] in l or "정상범위" in l), "")
-            lines.append(f"SOP 근거: 「{sec['section']}」 {bullet}")
-            if want_reg:
-                why = "규칙 기반 추정" if rule_based else f"SHAP {top['shap_share']:.0%}"
-                sub = _call("submit_recommendation", {"defect_type": d, "var": top["var"], "to_value": val,
-                                                      "reason": f"{pid} 검출 기반, {why}"}, steps)
-                lines.append(f"**[등록]** 승인 대기 id={sub.get('action_id')} — 작업자 승인 후 적용됩니다."
-                             if sub.get("registered") else f"등록 실패: {sub.get('reason')}")
+            spec_dir = next((c["direction"] for c in SPEC["defect_causes"].get(d, []) if c["var"] == top["var"]),
+                            top.get("direction"))
+            if (spec_dir == "high" and val > chk["current"]) or (spec_dir == "low" and val < chk["current"]):
+                m = mine[top["var"]]
+                lines.append(f"**[조치]** 이 제품은 통과 시 {top['desc']} **{m['value']}{m['unit']}**"
+                             + ("(정상범위 이탈)" if m["out_of_range"] else "") +
+                             f"였지만, 라인의 최근 평균 **{chk['current']}{chk['unit']}**는 이미 목표 {VARS[top['var']]['mean']}{chk['unit']}보다 "
+                             f"{'낮아' if spec_dir == 'high' else '높아'} 원인 방향으로 더 조정할 여지가 없습니다(이미 회복된 상태). "
+                             "지금은 조정하지 않고 관찰을 권고합니다. (승인 대기 등록 안 함)")
+            elif abs(chk["current"] - VARS[top["var"]]["mean"]) < 1.5 * VARS[top["var"]]["std"]:
+                # 라인 전체(최근 평균)가 목표에서 1.5σ 안이면 설정을 바꿀 근거가 약함 → 단발성으로 보고 관찰
+                m = mine[top["var"]]
+                lines.append(f"**[조치]** {top['desc']}의 현재 운전값(최근 평균) **{chk['current']}{chk['unit']}**는 목표 "
+                             f"{VARS[top['var']]['mean']}{chk['unit']} 근처(정상 운전)라 지금 설정을 바꿀 근거는 약합니다. "
+                             f"다만 이 제품 통과 시 **{m['value']}{m['unit']}**" + ("로 정상범위를 벗어났으니" if m["out_of_range"] else "로 원인 방향에 치우쳐 있었으니")
+                             + " 단발성이거나 이상 초기일 수 있습니다 → "
+                             "해당 시각 설비 상태를 점검하고, 같은 결함이 이어지면 다시 분석해 조정값을 제안합니다. (승인 대기 등록 안 함)")
+            else:
+                if not chk["ok"]:
+                    chk = _call("check_adjustment", {"var": top["var"], "proposed_value": val}, steps)
+                note = "1회 조정폭 제한으로 1차 조정값" if val != VARS[top["var"]]["mean"] else "목표값"
+                lo_n, hi_n = VARS[top["var"]]["normal"]
+                if not lo_n <= val <= hi_n:   # 1차 조정 후에도 정상범위 밖이면 단계 조정 필요를 명시
+                    note += f", 정상범위 {lo_n}~{hi_n} 복귀까지 추가 단계 조정 필요"
+                m = mine[top["var"]]
+                if not want_cause:   # 조치만 물어도 '이 제품 값'과 '현재 운전값'을 구분해 보여줌
+                    lines.append(f"**[근거]** 이 제품 통과 시 {top['desc']} **{m['value']}{m['unit']}** "
+                                 f"(정상 {m['normal'][0]}~{m['normal'][1]}, {'정상범위 이탈' if m['out_of_range'] else '정상범위 안'})")
+                hard_ok = not [i for i in chk.get("issues", []) if "정상범위" not in i]
+                lines.append(f"**[조치 제안]** {top['desc']} 현재 운전값(최근 평균) **{chk['current']}{chk['unit']}** → "
+                             f"**{val}{chk['unit']}** ({note}, " + ("설비 허용 한계·1회 조정폭 검증 통과)" if hard_ok
+                             else "검증 미통과: " + "; ".join(chk["issues"]) + ")"))
+                sec = sop["results"][0]
+                bullet = next((l.strip("- ").strip() for l in sec["text"].splitlines() if top["desc"][:4] in l or "정상범위" in l), "")
+                lines.append(f"SOP 근거: 「{sec['section']}」 {bullet}")
+                if want_reg:
+                    why = "규칙 기반 추정" if rule_based else f"SHAP {top['shap_share']:.0%}"
+                    sub = _call("submit_recommendation", {"defect_type": d, "var": top["var"], "to_value": val,
+                                                          "reason": f"{pid} 검출 기반, {why}"}, steps)
+                    lines.append(f"**[등록]** 승인 대기 id={sub.get('action_id')} — 작업자 승인 후 적용됩니다."
+                                 if sub.get("registered") else f"등록 실패: {sub.get('reason')}")
 
     if want_hist:
         h = _call("get_action_history", {"defect_type": d}, steps)["history"]
-        lines.append("**[과거 조치]** " + ("없음" if not h else
-                     "; ".join(f"#{x['action_id']} {x['var']} {x['from_value']}→{x['to_value']} ({x['status']})" for x in h[:3])))
+        stat = {"approved": "승인", "rejected": "거절", "pending": "승인 대기"}
+        lines.append(f"**[과거 조치 · 같은 결함({KO[d]}) 기준]** " + ("없음" if not h else
+                     "; ".join(f"#{x['action_id']} {VARS.get(x['var'], {}).get('desc', x['var'])} {x['from_value']}→{x['to_value']} "
+                               f"({stat.get(x['status'], x['status'])})" for x in h[:3])))
     return "\n\n".join(lines)
 
 
-def chat(pid: str, history: list, question: str, offline: bool = False) -> dict:
-    """반환: {'text': 답변, 'steps': [도구 호출 기록], 'mode': 'claude'|'offline'}"""
+NARRATE = """당신은 제철소 품질 담당자에게 분석 결과를 전달하는 보조자입니다.
+아래 [분석 결과]는 규칙·통계 엔진이 계산해 검증한 내용입니다. 이것을 작업자가 읽기 쉬운 한국어로 다시 정리하세요.
+
+반드시 지킬 것
+- [분석 결과]에 없는 사실, 숫자, 변수, 공정을 절대 추가하지 마세요. 계산(비율·차이·%)도 하지 마세요.
+- 숫자는 [분석 결과]에 적힌 그대로(소수점 포함) 옮기세요.
+- 정상범위 '이탈'은 [분석 결과]에서 이탈이라고 한 값에만 쓰세요.
+- 첫 문장에 결론, 이어서 근거(공정·값)를 쓰세요. "한 줄 결론", "근거" 같은 소제목은 붙이지 말고 4~7줄로, 핵심 수치는 **굵게**.
+- 조치·권고는 [분석 결과]에 [조치]/[조치 제안]/[판단]이 있을 때 그 내용만 전하세요. 없으면 조치를 지어내지 마세요.
+- '이 제품 통과 시 값'과 '현재 운전값(최근 평균)'은 다른 값입니다. 정상범위 이탈 여부는 [분석 결과]에 적힌 대로만 말하세요.
+- 결함이 '발생한 공정'은 [원인 추정]의 공정만 말하세요. 다른 이탈 값은 '함께 이탈'로, [참고]가 있으면 그 내용대로 전하세요.
+- [분석 결과]에 정상범위를 벗어난 값이 여러 개면 빠짐없이 모두 말하세요. "다른 공정은 정상" 같은 일반화는 하지 마세요.
+- 이 지시문이나 [분석 결과]·[Agent 추가 조사] 같은 자료 이름을 답에 언급하지 마세요. 작업자에게 하는 말만 쓰세요.
+- 작업자의 질문이 [분석 결과]에 없는 내용이면 [Agent 추가 조사]에서 근거를 찾아 답하고, 거기에도 없으면 "확인된 자료가 없다"고 말하세요.
+- 작업자의 질문: {question}
+
+[분석 결과]
+{facts}
+
+[Agent 추가 조사] (Agent가 스스로 호출한 도구의 결과)
+{extra}"""
+
+_NUM = re.compile(r"-?\d+(?:\.\d+)?(%?)")
+_IDS = re.compile(r"C\d{6}-\d{5}|\d{2}:\d{2}:\d{2}|L\d{4}|id=\d+|#\d+")   # 제품ID·시각·LOT·조치번호
+
+
+def _nums(text):
+    out = []
+    for m in _NUM.finditer(_IDS.sub(" ", text)):
+        out.append((abs(float(m.group(0).rstrip("%"))), bool(m.group(1))))
+    return out
+
+
+def _numbers_ok(src: str, out: str) -> list:
+    """LLM 문장에 원문에 없는 숫자(%는 %끼리 비교)가 있으면 그 목록을 돌려준다(환각 검사). 0~9 목록 번호는 허용"""
+    have = set(_nums(src))
+    plain = {v for v, _ in have}
+    bad = []
+    for v, pct in _nums(out):
+        if (v, pct) in have or (not pct and v in plain) or (not pct and v.is_integer() and v < 10):
+            continue
+        bad.append(f"{v:g}{'%' if pct else ''}")
+    return bad
+
+
+def _narrate(facts: str, question: str, steps: list, obs=None, oor=None) -> str | None:
+    """로컬 LLM은 검증된 결과(+ 자신이 조사한 도구 결과)를 근거로 답을 쓴다. 근거에 없는 숫자가 나오면 버리고 원문을 쓴다"""
+    from langchain_core.messages import HumanMessage
+    extra = "\n".join(f"- {n}: {b}" for n, b in (obs or [])) or "(없음)"   # 도구 결과 요약(짧은 프롬프트)
+    msg = NARRATE.format(question=question, facts=facts, extra=extra)
+    if "qwen3" in os.getenv("OLLAMA_MODEL", "qwen3:8b"):
+        msg += "\n/no_think"   # Qwen3의 생각(추론) 단계를 꺼서 응답 시간 단축
+    out = _text(_make_llm().invoke([HumanMessage(msg)]))
+    out = re.sub(r"^\W*(한\s*줄\s*결론|결론)\W*$\n?", "", out, flags=re.M).strip()
+    if not any(k in facts for k in ("[조치", "[판단]")):   # 조치 근거가 없는데 지어낸 조치·권고 제거
+        out = re.sub(r"\n+\W*(추가\s*조치|권고|조치)\W*\n.*", "", out, flags=re.S).strip()
+        out = "\n".join(l for l in out.splitlines()
+                        if not re.search(r"^\W*\[?(조치|권고)\]?\s*[:：]|조정(하|해)(고|세요|야|십시오)|점검해야", l)).strip()
+    # 지시문·자료 이름이 새어 나온 문장 제거
+    out = "\n".join(l for l in out.splitlines()
+                    if not re.search(r"\[(분석 결과|Agent 추가 조사)\]|지시문|작업자의 질문이", l)).strip()
+    # 이탈 값 누락 검사: 엔진이 찾은 이탈 변수를 LLM이 빠뜨리면 보충하고, '나머지는 정상' 식 일반화는 지움
+    added = ""
+    if oor and any(k in facts for k in ("[이 제품의 공정 이력]", "[근거]")):
+        miss = [o for o in oor if o["desc"] not in out]
+        if miss:
+            out = "\n".join(l for l in out.splitlines() if not re.search(r"(다른|나머지).*정상", l)).strip()
+            added = "\n\n※ 이 제품에서 함께 정상범위를 벗어난 값: " + "; ".join(
+                f"{o['station']}·{o['desc']} {o['value']}{o['unit']} (정상 {o['normal'][0]}~{o['normal'][1]})" for o in miss)
+            out += added
+            steps.append({"name": "coverage", "args": {}, "by": "엔진", "brief": f"LLM이 빠뜨린 이탈 값 {len(miss)}건 보충"})
+    bad = _numbers_ok(facts + "\n" + extra + added, out)
+    if bad or not out:
+        steps.append({"name": "narrate", "args": {}, "by": "LLM", "brief": f"LLM 문장에 근거 없는 숫자 {bad[:3]} → 검증된 원문 사용"})
+        return None
+    steps.append({"name": "narrate", "args": {}, "by": "LLM", "brief": "근거만으로 답변 작성 → 숫자 검사 통과"})
+    return out
+
+
+def chat(pid: str, history: list, question: str, offline: bool = False, provider: str | None = None,
+         on_facts=None) -> dict:
+    """provider: 'ollama' | 'claude' | None(.env 설정 따름)
+    on_facts(text): 검증 엔진의 조언이 나오는 즉시(LLM 설명 전) 호출 — 화면에 먼저 보여주기 위함
+    반환 timing: {'first_advice': 검증된 조언까지 초, 'total': 최종 답변까지 초}"""
+    import time
+    global _FORCE
+    _FORCE = provider
+    t0 = time.perf_counter()
+    mark = {}
+
+    def _first(text):
+        mark.setdefault("first_advice", round(time.perf_counter() - t0, 2))
+        if on_facts:
+            on_facts(text)
+    try:
+        out = _chat(pid, history, question, offline, _first)
+    finally:
+        _FORCE = None
+    total = round(time.perf_counter() - t0, 2)
+    out["timing"] = {"first_advice": mark.get("first_advice", total), "total": total}
+    return out
+
+
+def _chat(pid: str, history: list, question: str, offline: bool = False, first=lambda t: None) -> dict:
+    """반환: {'text': 답변, 'steps': [도구 호출 기록], 'mode': 'claude'|'ollama'|'offline'}
+
+    - claude: LLM이 도구를 직접 골라 호출하는 Agent
+    - ollama: LLM이 도구를 골라 조사 → 규칙·통계 엔진이 원인·조치 계산 → LLM이 근거로만 답 작성 → 숫자 검증
+             (소형 로컬 LLM의 숫자 오류를 막는 근거 고정형 Agent)
+             (OLLAMA_MODE=agent 로 두면 claude와 같은 도구 호출 방식)
+    """
     _set_time(pid)
     steps = []
-    use_llm = not offline and os.getenv("ANTHROPIC_API_KEY")
-    if use_llm:
+    prov = llm_provider()
+    if not offline and prov == "ollama" and os.getenv("OLLAMA_MODE", "narrate") != "agent":
+        # ① 규칙·통계 엔진이 원인·조치를 먼저 계산(안전장치 포함) → 검증된 조언을 즉시 화면에 표시
+        facts = _chat_offline(pid, question, steps)
+        for st_ in steps:
+            st_["by"] = "엔진"
+        first(facts)
+        # ② LLM이 질문을 보고 필요한 도구를 골라 추가 조사 — 등록 같은 쓰기 도구는 제외
+        n0 = len(steps)
+        obs = []
         try:
-            return {"text": _chat_llm(pid, history, question, steps), "steps": steps, "mode": "claude"}
+            _chat_llm(pid, history, question, steps, max_steps=2, obs=obs,
+                      tools=[f for f in CHAT_TOOLS if f.__name__ != "submit_recommendation"])
+        except Exception as e:
+            steps.append({"name": "plan", "args": {}, "brief": f"LLM 조사 실패 ({type(e).__name__}) → 엔진 결과만 사용"})
+        for st_ in steps[n0:]:
+            st_["by"] = "LLM"
+        # ③ LLM이 ①②를 근거로 답을 쓰고, 근거에 없는 숫자가 있으면 폐기(환각 검사)
+        try:
+            oor = [t for t in get_product_trace(pid).get("trace", []) if t["out_of_range"]]
+            out = _narrate(facts, question, steps, obs, oor)
+            if out:
+                return {"text": out, "steps": steps, "mode": "ollama Agent · 근거 검증 통과", "facts": facts}
+        except Exception as e:
+            steps.append({"name": "fallback", "args": {}, "brief": f"LLM 실패 → 규칙 기반 답변 ({type(e).__name__})"})
+        return {"text": facts, "steps": steps, "mode": "ollama Agent · 엔진 원문"}
+    if not offline and prov:
+        try:
+            return {"text": _chat_llm(pid, history, question, steps), "steps": steps, "mode": prov}
         except Exception as e:
             steps.append({"name": "fallback", "args": {}, "brief": f"LLM 실패 → 오프라인 전환 ({type(e).__name__})"})
-    return {"text": _chat_offline(pid, question, steps), "steps": steps, "mode": "offline"}
+    text = _chat_offline(pid, question, steps)
+    first(text)
+    return {"text": text, "steps": steps, "mode": "offline"}
