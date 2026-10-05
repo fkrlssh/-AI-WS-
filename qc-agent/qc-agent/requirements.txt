@@ -1,0 +1,14 @@
+# 공통
+pyyaml
+pandas
+numpy
+scikit-learn
+shap
+# Agent
+langchain-core
+langchain-anthropic
+python-dotenv
+# Vision (학습/추론은 GPU 권장: Colab 또는 경남TP GPU 서버)
+ultralytics
+# UI
+streamlit>=1.46

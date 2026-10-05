@@ -1,0 +1,41 @@
+# 열연(Hot Strip Mill) 공정 사양 — 시뮬레이션 가정값
+# ※ 실제 설비 데이터가 아니라 일반적인 공정 범위를 참고한 "시뮬레이션용 가정"입니다.
+#   보고서·발표에서 반드시 "시뮬레이션 기준"으로 표기할 것.
+
+stations:
+  STEELMAKING: {name: 제강(상류),      order: 0}
+  REHEAT:      {name: 가열로,          order: 1}
+  DESCALE:     {name: 디스케일링,      order: 2}
+  FINISH:      {name: 사상압연,        order: 3}
+  COOL:        {name: 냉각(ROT)·권취,  order: 4}
+
+# normal: 정상 운전 범위 / hard: 설비 허용 한계(조언값이 넘으면 안 됨) / max_step: 1회 조정 최대폭
+variables:
+  inclusion_index:  {station: STEELMAKING, unit: "idx",   mean: 1.0,  std: 0.15, normal: [0.6, 1.4],   hard: [0.0, 3.0],    max_step: null, adjustable: false, desc: 슬래브 개재물 지수(상류 품질)}
+  furnace_temp:     {station: REHEAT,      unit: "°C",    mean: 1215, std: 10,   normal: [1190, 1240], hard: [1150, 1280],  max_step: 20,   adjustable: true, desc: 가열로 추출 온도}
+  heating_time:     {station: REHEAT,      unit: "min",   mean: 210,  std: 8,    normal: [190, 230],   hard: [160, 280],    max_step: 15,   adjustable: true, desc: 가열(재로) 시간}
+  descale_pressure: {station: DESCALE,     unit: "bar",   mean: 180,  std: 6,    normal: [165, 195],   hard: [140, 220],    max_step: 15,   adjustable: true, desc: 디스케일링 분사 압력}
+  finish_speed:     {station: FINISH,      unit: "m/s",   mean: 10.0, std: 0.35, normal: [9.2, 10.8],  hard: [7.0, 12.5],   max_step: 0.8,  adjustable: true, desc: 사상압연 출측 속도}
+  roll_force:       {station: FINISH,      unit: "MN",    mean: 18.5, std: 0.8,  normal: [16.5, 20.5], hard: [14.0, 24.0],  max_step: 1.5,  adjustable: true, desc: 압하력}
+  guide_gap:        {station: FINISH,      unit: "mm",    mean: 3.0,  std: 0.15, normal: [2.6, 3.4],   hard: [2.0, 5.0],    max_step: 0.5,  adjustable: true, desc: 사이드 가이드 간극}
+  cooling_flow:     {station: COOL,        unit: "m3/h",  mean: 900,  std: 20,   normal: [850, 950],   hard: [700, 1100],   max_step: 60,   adjustable: true, desc: 냉각수 유량}
+  coiling_temp:     {station: COOL,        unit: "°C",    mean: 615,  std: 8,    normal: [595, 635],   hard: [540, 700],    max_step: 20,   adjustable: true, desc: 권취 온도}
+
+# 결함 유형 → 원인 가설(시뮬레이션에서 고장 주입 시 쓰는 "정답 규칙")
+# direction: 변수가 low/high 쪽으로 이탈하면 해당 결함 확률 상승
+defect_causes:
+  rolled-in_scale: [{var: descale_pressure, direction: low}, {var: furnace_temp, direction: high}]
+  pitted_surface:  [{var: heating_time, direction: high}]
+  scratches:       [{var: guide_gap, direction: low}, {var: finish_speed, direction: high}]
+  patches:         [{var: cooling_flow, direction: low}]
+  crazing:         [{var: coiling_temp, direction: low}]
+  inclusion:       [{var: inclusion_index, direction: high}]
+
+classes: [crazing, inclusion, patches, pitted_surface, rolled-in_scale, scratches]
+defect_names_ko:
+  crazing: 균열(크레이징)
+  inclusion: 개재물
+  patches: 패치(얼룩)
+  pitted_surface: 피팅(점식)
+  rolled-in_scale: 압입 스케일
+  scratches: 스크래치

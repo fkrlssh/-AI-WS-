@@ -1,0 +1,12 @@
+# 증강 데이터셋 (augment_data.py). 다른 PC에서 학습하면 path를 그 위치로 바꾸세요
+path: /Users/seungseung/Desktop/SSeung/공모전/공모전2/qc-agent/data/neu-det-aug
+train: train/images
+val: val/images
+nc: 6
+names:
+- crazing
+- inclusion
+- patches
+- pitted_surface
+- rolled-in_scale
+- scratches

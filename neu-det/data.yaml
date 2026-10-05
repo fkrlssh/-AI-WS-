@@ -1,0 +1,12 @@
+# 압축 푼 neu-det 폴더의 절대경로로 바꿔주세요 (예: /Users/seungrok/neu-det)
+path: /CHANGE/TO/ABSOLUTE/PATH/neu-det
+train: train/images
+val: val/images
+nc: 6
+names:
+- crazing
+- inclusion
+- patches
+- pitted_surface
+- rolled-in_scale
+- scratches

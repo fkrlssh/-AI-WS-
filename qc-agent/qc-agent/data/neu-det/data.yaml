@@ -1,0 +1,11 @@
+path: /Users/seungseung/Desktop/SSeung/공모전/공모전2/qc-agent/data/neu-det
+train: train/images
+val: val/images
+nc: 6
+names:
+- crazing
+- inclusion
+- patches
+- pitted_surface
+- rolled-in_scale
+- scratches
