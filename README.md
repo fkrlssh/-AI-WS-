@@ -21,8 +21,8 @@
 | 정상 오검출률 (의사 정상 test 36장) | 16.7% |
 | 원인 변수 top-1 (시뮬레이션 12개 에피소드, 종료 시점 / 발생 후 40개) | 100% / 92% |
 | 1장 판별 시간 (RTX 3060) | 9.2ms |
-| 검증된 조언 표시 시간 (30건) | 평균 0.56초, 최대 0.73초 |
-| 로컬 LLM(Qwen3 8B) 설명 완료 시간 (12건) | 평균 21.1초 |
+| 검증된 조언 표시 시간 | 오프라인 30건 평균 0.56초 · 로컬 LLM 12건 평균 0.40초 |
+| 로컬 LLM(Qwen3 8B) 설명 완료 시간 (12건) | 평균 11.5초, 최대 13.8초 |
 
 ## 실행
 ```
@@ -33,7 +33,7 @@ python scripts/assign_normal_images.py
 python vision/infer.py --weights runs/neu_bg_yolo11n/weights/best.pt
 python -m streamlit run app.py
 ```
-- Agent 모드: 오프라인(규칙·통계 엔진) · 로컬 LLM(Ollama, `.env`에 `LLM_PROVIDER=ollama`) · Claude API(`.env`에 `ANTHROPIC_API_KEY`)
-- 평가: `scripts/eval_vision.py`, `eval_cause.py`, `eval_agent_time.py`, `eval_agent_quality.py` (결과는 `runs/eval_*`)
+- Agent 모드: 로컬 LLM(Ollama · Qwen3 8B, `.env`에 `LLM_PROVIDER=ollama`) · 오프라인(규칙·통계 엔진)
+- 평가: `scripts/eval_vision.py`, `eval_cause.py`, `eval_agent_time.py`, `eval_agent_quality.py` (`eval_cause.py`는 화면 출력, 나머지는 `runs/eval_*`)
 
-데이터셋 이미지(NEU-DET)와 API 키(.env)는 저장소에 포함하지 않는다. 공정 데이터는 모두 시뮬레이션이다.
+데이터셋 이미지(NEU-DET)와 `.env`는 저장소에 포함하지 않는다. 공정 데이터는 모두 시뮬레이션이다.

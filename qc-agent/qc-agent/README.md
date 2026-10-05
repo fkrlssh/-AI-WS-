@@ -1,41 +1,40 @@
-# Promptors · 비전 AI 기반 불량 분류 및 원인 추적 Agent
+# 비전 AI 기반 불량 분류 및 원인 추적 Agent
 
-제4회 경남 AI·SW 경진대회 (대학부) — D1~2 골격
+제4회 경남 AI·SW 경진대회 (대학부)
 
-## 빠른 시작
-```bash
-pip install -r requirements.txt
-python scripts/prepare_data.py          # NEU-DET 다운로드 → data/neu-det
-python scripts/simulate_process.py      # 공정 이력 + 고장 에피소드 → data/factory.db
-python vision/infer.py --mock           # (모델 학습 전) 정답 라벨로 검사결과 채우기
-python scripts/eval_cause.py            # 원인 추적 정확도 (시뮬레이션 기준)
-python run_demo.py --scenario scratches --offline   # Fallback 플래너로 시연
-cp .env.example .env  # 키 입력 후
-python run_demo.py --scenario scratches              # Claude Agent로 시연
-python run_demo.py approve 1                          # 작업자 승인 → 다음 실행 때 Memory로 참조
+## 실행 (Windows PowerShell, 이 폴더에서)
 ```
-
-## YOLO 학습 (GPU: Colab 또는 경남TP GPU 서버)
-```bash
-# Colab
-!git clone <repo> && cd qc-agent && pip install -r requirements.txt
-!python scripts/prepare_data.py
-!python vision/train.py --model yolo11n.pt --epochs 100
-# 학습 후 best.pt를 받아와서
-python vision/infer.py --weights runs/neu_yolo11n/weights/best.pt
+python -m pip install -r requirements.txt
+copy .env.example .env                       # 로컬 LLM(Ollama) 설정
+ollama pull qwen3:8b                         # 로컬 LLM 모델
+python scripts/simulate_process.py           # 공정 이력 + 고장 에피소드 → data/factory.db
+python scripts/assign_normal_images.py       # 정상 제품에 의사 정상 이미지 배정
+python vision/infer.py --weights runs/neu_bg_yolo11n/weights/best.pt
+python -m streamlit run app.py               # 시연 앱
 ```
+- Agent 모드(앱 사이드바): 로컬 LLM(Ollama · Qwen3 8B) / 오프라인(규칙·통계 엔진)
+- 터미널 조사 모드: `python run_demo.py --scenario scratches --offline` (규칙 기반 플래너, 실행 로그는 `logs/`)
+
+## 평가
+| 스크립트 | 내용 | 결과 |
+|---|---|---|
+| `scripts/eval_vision.py` | 분류 정확도, 추론 시간, 정상 오검출률 | `runs/eval_vision.json` |
+| `scripts/eval_cause.py` (`--early N`) | 급증 탐지율, 원인 변수·공정 top-1/top-3 | 화면 출력 |
+| `scripts/eval_agent_time.py --provider offline\|ollama` | 조언 표시·최종 답변 시간 | `runs/eval_agent_time_*.json` |
+| `scripts/eval_agent_quality.py --provider offline\|ollama` | 답변 문제 유형 자동 집계 | `runs/eval_agent_quality.md/.csv` |
 
 ## 구조
 ```
+app.py                     Streamlit 시연 앱 (가상 컨베이어, 검출 보관함, 원인 분석 대화)
 config/process_spec.yaml   공정·변수·정상범위·허용한계·결함-원인 가정 (시뮬레이션)
-scripts/                   데이터 준비, 공정 시뮬레이터, 원인추적 평가
-vision/                    YOLO 학습·추론 (--mock 지원)
-agent/tools.py             Agent 도구 8종
-agent/agent.py             Claude(LangChain) tool-calling 루프 + Fallback 플래너 + 실행 로그
-agent/sop/                 RAG용 작업표준서(가상)
-docs/SCOPE.md              D1 범위 확정서 / docs/SOURCES.md 출처 기록표
-logs/                      실행 로그(jsonl) — 대시보드에서 판단 과정 표시용
+agent/chat.py              제품 단위 대화 Agent (규칙·통계 엔진 + 로컬 LLM 근거 고정형)
+agent/tools.py             공통 도구 8종 (+ chat.py의 get_product_trace = 9종)
+agent/agent.py             터미널 조사 모드 (규칙 기반 플래너, 실행 로그)
+agent/rag.py, agent/sop/   작업표준서(가상) 검색
+vision/                    YOLO 학습·추론
+scripts/                   데이터 준비, 공정 시뮬레이터, 평가
+docs/                      범위 확정서(초기 계획), 출처·AI 활용 기록표
 ```
 
-> ⚠️ 공정 데이터·작업표준서는 시뮬레이션/가상입니다. 성능 수치는 "시뮬레이션 시나리오 기준"으로만 보고합니다.
-> ⚠️ `--mock` 결과는 개발용이며 시연·평가에 사용하지 않습니다. `.env`(API 키)는 절대 커밋하지 않습니다.
+> 공정 데이터·작업표준서는 시뮬레이션/가상입니다. 성능 수치는 "시뮬레이션 시나리오 기준"입니다.
+> `agent/agent.py`·`agent/chat.py`에 개발 초기에 만든 Claude API 연결 코드가 남아 있으나 사용·검증하지 않았습니다.
