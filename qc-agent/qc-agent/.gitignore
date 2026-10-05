@@ -5,3 +5,7 @@ logs/
 *.pt
 *.onnx
 __pycache__/
+
+# 시연 산출물·전달용 압축
+detections/
+*.zip
