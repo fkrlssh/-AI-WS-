@@ -15,6 +15,14 @@ python -m streamlit run app.py               # 시연 앱
 - Agent 모드(앱 사이드바): 로컬 LLM(Ollama · Qwen3 8B) / 오프라인(규칙·통계 엔진)
 - 터미널 조사 모드: `python run_demo.py --scenario scratches --offline` (규칙 기반 플래너, 실행 로그는 `logs/`)
 
+## 사용 모델과 가중치
+| 모델 | 버전·위치 | 출처 · 라이선스 | 용도 |
+|---|---|---|---|
+| YOLO11n (팀 학습, 최종) | `runs/neu_bg_yolo11n/weights/best.pt` — 저장소에 포함 | `yolo11n.pt`(Ultralytics, AGPL-3.0)에서 전이학습, Ultralytics 8.4.172 | 결함 판별 |
+| Qwen3 8B | Ollama `qwen3:8b` (ID 500a1f067a9f, 5.2GB) — `ollama pull qwen3:8b` | Alibaba Qwen, Apache-2.0 / Ollama(MIT) | 로컬 LLM: 추가 조사·설명 |
+
+외부 API 모델은 사용하지 않는다. 데이터·라이브러리 출처는 `docs/SOURCES.md`에 있다.
+
 ## 평가
 | 스크립트 | 내용 | 결과 |
 |---|---|---|
